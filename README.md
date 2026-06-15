@@ -25,7 +25,7 @@ It records who runs a program, keeps a heartbeat while the program is running, s
 
 ```text
 RunBoard.ps1                  # English/ASCII UI, waits for target process
-RunBoardDetached.ps1          # English/ASCII UI, launches detached watcher
+RunBoardDetached.ps1          # English/ASCII UI, launches detached watcher and exits
 RunBoardWatcher.ps1           # Background watcher used by detached mode
 runboard.config.json          # created automatically on first run
 runboard.sample.config.json   # example config
@@ -59,9 +59,7 @@ Detached watcher mode:
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoardDetached.ps1
 ```
 
-In detached mode, RunBoard starts the target program and launches `RunBoardWatcher.ps1` in the background. The watcher keeps updating heartbeat/session data until the target process exits. After the target process exits, the watcher writes the closed session log, removes the running session and heartbeat files, then exits.
-
-`RunBoardDetached.ps1` also waits for the launched target process. When the target process exits, the RunBoard command window closes. If the user closes the RunBoard command window first, the hidden watcher continues logging.
+In detached mode, RunBoard shows current sessions and upcoming reservations, starts the target program, launches `RunBoardWatcher.ps1` in the background, and then exits. The watcher keeps updating heartbeat/session data until the target process exits. After the target process exits, the watcher writes the closed session log, removes the running session and heartbeat files, then exits.
 
 On first run, RunBoard asks for:
 
@@ -169,11 +167,11 @@ When the target program exits, the session is moved to:
 
 ```text
 RunBoardDetached.ps1
+  -> shows current sessions and reservations
   -> starts target exe
   -> creates running session and heartbeat
   -> starts RunBoardWatcher.ps1 hidden
-  -> waits for the target PID
-  -> exits when the target PID exits
+  -> exits
 
 RunBoardWatcher.ps1
   -> updates heartbeat while target PID exists
