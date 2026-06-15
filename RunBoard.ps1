@@ -9,13 +9,17 @@ function CurrentUser { if([string]::IsNullOrWhiteSpace($env:USERDOMAIN)){$env:US
 function ConfigFile { if(-not [string]::IsNullOrWhiteSpace($ConfigPath)){return $ConfigPath}; Join-Path (BaseDir) "runboard.config.json" }
 function Popup($title,$msg,[bool]$question){try{Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop|Out-Null; if($question){return [System.Windows.Forms.MessageBox]::Show($msg,$title,[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Question)}; return [System.Windows.Forms.MessageBox]::Show($msg,$title,[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning)}catch{Warn "[$title] $msg"; if($question){$a=Read-Host "Continue? (Y/N)"; if($a -match '^[Yy]'){"Yes"}else{"No"}}else{"OK"}}}
 
+function Add-MissingProperty($obj,[string]$name,$value){ if(-not ($obj.PSObject.Properties.Name -contains $name)){ $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value } }
 function LoadConfig {
     $file=ConfigFile
     if(Test-Path $file -PathType Leaf){
         $c=Get-Content -Raw -Path $file -Encoding UTF8|ConvertFrom-Json
-        if(-not $c.appId){$c|Add-Member appId (SafeId $c.appName)}
-        if(-not $c.heartbeatIntervalSeconds){$c|Add-Member heartbeatIntervalSeconds 30}
-        if(-not $c.reservationWarningMinutes){$c|Add-Member reservationWarningMinutes @(15,5,0)}
+        Add-MissingProperty $c "appId" (SafeId $c.appName)
+        Add-MissingProperty $c "heartbeatIntervalSeconds" 30
+        Add-MissingProperty $c "reservationWarningMinutes" @(15,5,0)
+        Add-MissingProperty $c "staleMinutes" 10
+        Add-MissingProperty $c "staleCleanupMinutesSameComputer" 30
+        Add-MissingProperty $c "staleCleanupHoursOtherComputer" 24
         return $c
     }
     Info "Config was not found. Initial setup starts."
@@ -25,7 +29,7 @@ function LoadConfig {
     $args=Read-Host "Target arguments [empty]"
     $work=Read-Host "Working directory [target exe directory]"; if([string]::IsNullOrWhiteSpace($work)){$work=Split-Path -Parent $target}
     do{$root=ExpandPath (Read-Host "Log/reservation root path"); if([string]::IsNullOrWhiteSpace($root)){Bad "Control root is required."}}while([string]::IsNullOrWhiteSpace($root))
-    $c=[ordered]@{appId=SafeId $name; appName=$name; targetPath=$target; targetArgs=$args; workingDirectory=$work; controlRoot=$root; heartbeatIntervalSeconds=30; reservationWarningMinutes=@(15,5,0); preventOverlappingReservations=$true}
+    $c=[ordered]@{appId=SafeId $name; appName=$name; targetPath=$target; targetArgs=$args; workingDirectory=$work; controlRoot=$root; heartbeatIntervalSeconds=30; reservationWarningMinutes=@(15,5,0); preventOverlappingReservations=$true; staleMinutes=10; staleCleanupMinutesSameComputer=30; staleCleanupHoursOtherComputer=24}
     $dir=Split-Path -Parent $file; if($dir){New-Item -ItemType Directory -Force -Path $dir|Out-Null}
     $c|ConvertTo-Json -Depth 10|Set-Content -Path $file -Encoding UTF8
     Info "Config created: $file"
@@ -38,6 +42,44 @@ function WithLock($p,[scriptblock]$block){$start=Get-Date;$stream=$null;while(((
 function Reservations($p){$raw=Get-Content -Raw -Path $p.reservationFile -Encoding UTF8;if([string]::IsNullOrWhiteSpace($raw)){return @()};$x=$raw|ConvertFrom-Json;if($null -eq $x){return @()};if($x -is [array]){@($x)}else{@($x)}}
 function SaveReservations($p,[array]$items){$items|ConvertTo-Json -Depth 10|Set-Content -Path $p.reservationFile -Encoding UTF8}
 function FTime($v){if($null -eq $v){return ""};([datetime]$v).ToString("yyyy-MM-dd HH:mm")}
+function WriteJson($path,$obj){$obj|ConvertTo-Json -Depth 10|Set-Content -Path $path -Encoding UTF8}
+
+function CleanupStaleSessions($c,$p){
+    $now=Get-Date
+    $sameMin=[double]$c.staleCleanupMinutesSameComputer
+    $otherMin=([double]$c.staleCleanupHoursOtherComputer)*60
+    $files=@(Get-ChildItem $p.runningDir -Filter "*.json" -ErrorAction SilentlyContinue)
+    $cleaned=0
+    foreach($f in $files){
+        try{
+            $s=Get-Content -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json
+            if(-not $s.lastSeen){continue}
+            $age=($now-([datetime]$s.lastSeen)).TotalMinutes
+            $sameComputer=($s.computer -ieq $env:COMPUTERNAME)
+            $eligible=$false
+            if($sameComputer){
+                $pidAlive=$false
+                if($s.pid){$pidAlive=[bool](Get-Process -Id ([int]$s.pid) -ErrorAction SilentlyContinue)}
+                if((-not $pidAlive) -and $age -ge $sameMin){$eligible=$true}
+            } else {
+                if($age -ge $otherMin){$eligible=$true}
+            }
+            if(-not $eligible){continue}
+            $s.status="stale_closed"
+            $s.closedBy="stale_cleanup"
+            $s.cleanupAt=$now.ToString("s")
+            $s.endTime=$now.ToString("s")
+            $s.staleAgeMinutes=[math]::Round($age,1)
+            $dest=Join-Path $p.closedDir $f.Name
+            if(Test-Path $dest){$dest=Join-Path $p.closedDir (([IO.Path]::GetFileNameWithoutExtension($f.Name))+"-cleanup-"+([guid]::NewGuid().ToString("N").Substring(0,8))+".json")}
+            WriteJson $dest $s
+            Remove-Item -Force $f.FullName -ErrorAction SilentlyContinue
+            if($s.sessionId){Remove-Item -Force (Join-Path $p.heartbeatDir "$($s.sessionId).hb") -ErrorAction SilentlyContinue}
+            $cleaned++
+        }catch{Warn "Failed to cleanup stale session file $($f.Name): $($_.Exception.Message)"}
+    }
+    if($cleaned -gt 0){Info "Cleaned $cleaned stale session(s)."}
+}
 
 function ShowReservations($p){$now=Get-Date;$list=Reservations $p|?{$_.status -eq "reserved" -and ([datetime]$_.endTime) -ge $now.Date}|sort{[datetime]$_.startTime};Write-Host "";Info "Reservations";if($list.Count -eq 0){Write-Host "No reservations.";return};$list|Select @{n="Start";e={FTime $_.startTime}},@{n="End";e={FTime $_.endTime}},@{n="User";e={$_.user}},@{n="Purpose";e={$_.purpose}}|ft -AutoSize}
 function AddReservation($p){Write-Host "";Info "Add reservation";Write-Host "Date format: yyyy-MM-dd HH:mm";$st=Read-Host "Start time, blank to cancel";if([string]::IsNullOrWhiteSpace($st)){return};$et=Read-Host "End time";$s=[datetime]::Parse($st);$e=[datetime]::Parse($et);if($e -le $s){Bad "End time must be later than start time.";return};$purpose=Read-Host "Purpose [optional]";$user=CurrentUser;WithLock $p {$items=@(Reservations $p);$conflict=@($items|?{$_.status -eq "reserved" -and $s -lt ([datetime]$_.endTime) -and $e -gt ([datetime]$_.startTime)});if($conflict.Count -gt 0){Bad "Reservation conflict.";$conflict|Select @{n="Start";e={FTime $_.startTime}},@{n="End";e={FTime $_.endTime}},@{n="User";e={$_.user}},@{n="Purpose";e={$_.purpose}}|ft -AutoSize;return};$id="{0}-{1}-{2}" -f $s.ToString("yyyyMMdd-HHmmss"),(SafeId $user),([guid]::NewGuid().ToString("N").Substring(0,8));$new=[pscustomobject][ordered]@{reservationId=$id;user=$user;computer=$env:COMPUTERNAME;startTime=$s.ToString("s");endTime=$e.ToString("s");purpose=$purpose;status="reserved";createdAt=(Get-Date).ToString("s")};SaveReservations $p (@($items)+$new);Info "Reservation added."}}
@@ -45,105 +87,28 @@ function CancelMine($p){$user=CurrentUser;$now=Get-Date;WithLock $p {$items=@(Re
 function CurrentOtherReservations($p){$now=Get-Date;$user=CurrentUser;@(Reservations $p|?{$_.status -eq "reserved" -and $_.user -ine $user -and $now -ge ([datetime]$_.startTime) -and $now -lt ([datetime]$_.endTime)})}
 function NextOtherReservation($p){$now=Get-Date;$user=CurrentUser;@(Reservations $p|?{$_.status -eq "reserved" -and $_.user -ine $user -and ([datetime]$_.startTime) -gt $now}|sort{[datetime]$_.startTime}|select -First 1)}
 
-function ShowSessions($p){
+function ShowSessions($p,$c){
     Write-Host ""
     Info "Current sessions"
     $files=@(gci $p.runningDir -Filter "*.json" -ea SilentlyContinue)
     if($files.Count -eq 0){Write-Host "No running sessions."}
     else{
-        $now=Get-Date
-        $rows=foreach($f in $files){try{$s=gc -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json;$age=[math]::Round(($now-([datetime]$s.lastSeen)).TotalMinutes,1);[pscustomobject]@{State=$(if($age -le 5){"running"}else{"stale"});User=$s.user;Computer=$s.computer;Start=FTime $s.startTime;LastSeen=FTime $s.lastSeen;AgeMin=$age}}catch{}}
+        $now=Get-Date; $staleMin=[double]$c.staleMinutes
+        $rows=foreach($f in $files){try{$s=gc -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json;$age=[math]::Round(($now-([datetime]$s.lastSeen)).TotalMinutes,1);[pscustomobject]@{State=$(if($age -le $staleMin){"running"}else{"stale"});User=$s.user;Computer=$s.computer;Start=FTime $s.startTime;LastSeen=FTime $s.lastSeen;AgeMin=$age}}catch{}}
         $rows|ft -AutoSize
     }
-
     Write-Host ""
     Info "Current / upcoming reservations"
-    $now2 = Get-Date
-    $until = $now2.AddDays(1)
-    $reservations = @(Reservations $p | ?{ $_.status -eq "reserved" -and ([datetime]$_.endTime) -ge $now2 -and ([datetime]$_.startTime) -lt $until } | sort{[datetime]$_.startTime})
-    if($reservations.Count -eq 0){ Write-Host "No current or upcoming reservations in the next 24 hours."; return }
-    $reservations | Select @{n="State";e={ if($now2 -ge ([datetime]$_.startTime) -and $now2 -lt ([datetime]$_.endTime)){"now"}else{"upcoming"} }},@{n="Start";e={FTime $_.startTime}},@{n="End";e={FTime $_.endTime}},@{n="User";e={$_.user}},@{n="Purpose";e={$_.purpose}} | ft -AutoSize
+    $now2=Get-Date; $until=$now2.AddDays(1)
+    $reservations=@(Reservations $p|?{$_.status -eq "reserved" -and ([datetime]$_.endTime) -ge $now2 -and ([datetime]$_.startTime) -lt $until}|sort{[datetime]$_.startTime})
+    if($reservations.Count -eq 0){Write-Host "No current or upcoming reservations in the next 24 hours.";return}
+    $reservations|Select @{n="State";e={if($now2 -ge ([datetime]$_.startTime) -and $now2 -lt ([datetime]$_.endTime)){"now"}else{"upcoming"}}},@{n="Start";e={FTime $_.startTime}},@{n="End";e={FTime $_.endTime}},@{n="User";e={$_.user}},@{n="Purpose";e={$_.purpose}}|ft -AutoSize
 }
 
-function StartWatcher($p, $sessionFile, $heartbeatFile, $closedFile, $processId, $c){
-    $watcher = Join-Path (BaseDir) "RunBoardWatcher.ps1"
-    if(-not(Test-Path $watcher -PathType Leaf)){throw "RunBoardWatcher.ps1 not found: $watcher"}
-    $warns = @($c.reservationWarningMinutes) -join ","
-    $arg = @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$watcher`"","-ProcessId",$processId,"-SessionFile","`"$sessionFile`"","-HeartbeatFile","`"$heartbeatFile`"","-ClosedFile","`"$closedFile`"","-ReservationFile","`"$($p.reservationFile)`"","-HeartbeatIntervalSeconds",$c.heartbeatIntervalSeconds,"-ReservationWarningMinutes",$warns) -join " "
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arg | Out-Null
-}
-
-function RunNow($c,$p){
-    $target=ExpandPath $c.targetPath
-    if(-not(Test-Path $target -PathType Leaf)){Bad "Target exe not found: $target";return $false}
-    $work=ExpandPath $c.workingDirectory
-    if(-not(Test-Path $work -PathType Container)){$work=Split-Path -Parent $target}
-    ShowSessions $p
-    $others=@(CurrentOtherReservations $p)
-    if($others.Count -gt 0){$r=$others[0];$msg="Current time overlaps another user's reservation.`r`n`r`nUser: $($r.user)`r`nTime: $(FTime $r.startTime) ~ $(FTime $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nRun anyway?";if((Popup "RunBoard reservation warning" $msg $true) -ne "Yes"){Warn "Run cancelled by user.";return $false}}
-    $now=Get-Date
-    $sid="{0}-{1}-{2}-{3}" -f $c.appId,$now.ToString("yyyyMMdd-HHmmss"),(SafeId $env:COMPUTERNAME),(SafeId $env:USERNAME)
-    $sessionFile=Join-Path $p.runningDir "$sid.json"
-    $closedFile=Join-Path $p.closedDir "$sid.json"
-    $heartbeatFile=Join-Path $p.heartbeatDir "$sid.hb"
-    $si=@{FilePath=$target;WorkingDirectory=$work;PassThru=$true}
-    if(-not [string]::IsNullOrWhiteSpace($c.targetArgs)){$si.ArgumentList=$c.targetArgs}
-    Info "Starting: $target"
-    $proc=Start-Process @si
-    $session=[ordered]@{sessionId=$sid;appId=$c.appId;appName=$c.appName;user=(CurrentUser);computer=$env:COMPUTERNAME;pid=$proc.Id;targetPath=$target;startTime=$now.ToString("s");lastSeen=$now.ToString("s");endTime=$null;status="running";exitCode=$null;warningsShown=@();overlappedReservations=@();watcher="detached"}
-    $session|ConvertTo-Json -Depth 10|Set-Content $sessionFile -Encoding UTF8
-    $now.ToString("s")|Set-Content $heartbeatFile -Encoding ASCII
-    StartWatcher $p $sessionFile $heartbeatFile $closedFile $proc.Id $c
-    Info "Detached watcher started. RunBoard will exit now; watcher will keep logging."
-    return $true
-}
-
-function StopOwnedTargets($c,$p){
-    $user = CurrentUser
-    $computer = $env:COMPUTERNAME
-    $files = @(Get-ChildItem $p.runningDir -Filter "*.json" -ErrorAction SilentlyContinue)
-    $targets = @()
-    foreach($f in $files){
-        try{
-            $s = Get-Content -Raw $f.FullName -Encoding UTF8 | ConvertFrom-Json
-            if($s.appId -eq $c.appId -and $s.user -ieq $user -and $s.computer -ieq $computer -and $s.pid){
-                $proc = Get-Process -Id ([int]$s.pid) -ErrorAction SilentlyContinue
-                if($proc){ $targets += [pscustomobject]@{Process=$proc; Session=$s} }
-            }
-        }catch{}
-    }
-    if($targets.Count -eq 0){ Info "No owned target process to stop."; return }
-    Info "Stopping $($targets.Count) owned target process(es)."
-    foreach($t in $targets){
-        $proc = $t.Process
-        try{
-            Info "Stopping PID $($proc.Id) ($($proc.ProcessName))"
-            if($proc.MainWindowHandle -ne 0){ [void]$proc.CloseMainWindow(); Start-Sleep -Seconds 5; $proc = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue }
-            if($proc){ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-        }catch{ Warn "Failed to stop PID $($t.Process.Id): $($_.Exception.Message)" }
-    }
-    Info "Exit requested. Watcher will move sessions to closed shortly."
-}
-
+function StartWatcher($p,$sessionFile,$heartbeatFile,$closedFile,$processId,$c){$watcher=Join-Path (BaseDir) "RunBoardWatcher.ps1"; if(-not(Test-Path $watcher -PathType Leaf)){throw "RunBoardWatcher.ps1 not found: $watcher"}; $warns=@($c.reservationWarningMinutes)-join ","; $arg=@("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$watcher`"","-ProcessId",$processId,"-SessionFile","`"$sessionFile`"","-HeartbeatFile","`"$heartbeatFile`"","-ClosedFile","`"$closedFile`"","-ReservationFile","`"$($p.reservationFile)`"","-HeartbeatIntervalSeconds",$c.heartbeatIntervalSeconds,"-ReservationWarningMinutes",$warns)-join " "; Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arg|Out-Null}
+function RunNow($c,$p){$target=ExpandPath $c.targetPath; if(-not(Test-Path $target -PathType Leaf)){Bad "Target exe not found: $target";return $false}; $work=ExpandPath $c.workingDirectory; if(-not(Test-Path $work -PathType Container)){$work=Split-Path -Parent $target}; ShowSessions $p $c; $others=@(CurrentOtherReservations $p); if($others.Count -gt 0){$r=$others[0];$msg="Current time overlaps another user's reservation.`r`n`r`nUser: $($r.user)`r`nTime: $(FTime $r.startTime) ~ $(FTime $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nRun anyway?"; if((Popup "RunBoard reservation warning" $msg $true)-ne "Yes"){Warn "Run cancelled by user.";return $false}}; $now=Get-Date; $sid="{0}-{1}-{2}-{3}" -f $c.appId,$now.ToString("yyyyMMdd-HHmmss"),(SafeId $env:COMPUTERNAME),(SafeId $env:USERNAME); $sessionFile=Join-Path $p.runningDir "$sid.json"; $closedFile=Join-Path $p.closedDir "$sid.json"; $heartbeatFile=Join-Path $p.heartbeatDir "$sid.hb"; $si=@{FilePath=$target;WorkingDirectory=$work;PassThru=$true}; if(-not [string]::IsNullOrWhiteSpace($c.targetArgs)){$si.ArgumentList=$c.targetArgs}; Info "Starting: $target"; $proc=Start-Process @si; $session=[ordered]@{sessionId=$sid;appId=$c.appId;appName=$c.appName;user=(CurrentUser);computer=$env:COMPUTERNAME;pid=$proc.Id;targetPath=$target;startTime=$now.ToString("s");lastSeen=$now.ToString("s");endTime=$null;status="running";exitCode=$null;warningsShown=@();overlappedReservations=@();watcher="detached"}; WriteJson $sessionFile $session; $now.ToString("s")|Set-Content $heartbeatFile -Encoding ASCII; StartWatcher $p $sessionFile $heartbeatFile $closedFile $proc.Id $c; Info "Detached watcher started. RunBoard will exit now; watcher will keep logging."; return $true}
+function StopOwnedTargets($c,$p){$user=CurrentUser; $computer=$env:COMPUTERNAME; $files=@(Get-ChildItem $p.runningDir -Filter "*.json" -ErrorAction SilentlyContinue); $targets=@(); foreach($f in $files){try{$s=Get-Content -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json; if($s.appId -eq $c.appId -and $s.user -ieq $user -and $s.computer -ieq $computer -and $s.pid){$proc=Get-Process -Id ([int]$s.pid) -ErrorAction SilentlyContinue; if($proc){$targets+=[pscustomobject]@{Process=$proc;Session=$s}}}}catch{}}; if($targets.Count -eq 0){Info "No owned target process to stop.";return}; Info "Stopping $($targets.Count) owned target process(es)."; foreach($t in $targets){$proc=$t.Process; try{Info "Stopping PID $($proc.Id) ($($proc.ProcessName))"; if($proc.MainWindowHandle -ne 0){[void]$proc.CloseMainWindow(); Start-Sleep -Seconds 5; $proc=Get-Process -Id $proc.Id -ErrorAction SilentlyContinue}; if($proc){Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue}}catch{Warn "Failed to stop PID $($t.Process.Id): $($_.Exception.Message)"}}; Info "Exit requested. Watcher will move sessions to closed shortly."}
 function ReservationMenu($p){while($true){Write-Host "";Write-Host "1. Add reservation";Write-Host "2. Cancel my reservation";Write-Host "3. Show reservations";Write-Host "4. Back";switch(Read-Host "Select"){"1"{AddReservation $p}"2"{CancelMine $p}"3"{ShowReservations $p}"4"{return}default{Warn "Invalid selection."}}}}
 function Header($c){Clear-Host;Write-Host "========================================";Write-Host " RunBoard - $($c.appName)";Write-Host "========================================";Write-Host "User       : $(CurrentUser)";Write-Host "Computer   : $env:COMPUTERNAME";Write-Host "Target     : $(ExpandPath $c.targetPath)";Write-Host "ControlRoot: $(ExpandPath $c.controlRoot)"}
 
-try{
-    $config=LoadConfig
-    $paths=Paths $config
-    InitStore $paths
-    while($true){
-        Header $config
-        ShowSessions $paths
-        Write-Host ""
-        Write-Host "1. Reservation"
-        Write-Host "2. Run now"
-        Write-Host "3. Exit"
-        switch(Read-Host "Select"){
-            "1"{ReservationMenu $paths}
-            "2"{if(RunNow $config $paths){return}; Read-Host "Press Enter to continue"|Out-Null}
-            "3"{StopOwnedTargets $config $paths; return}
-            default{Warn "Invalid selection."; Start-Sleep 1}
-        }
-    }
-}catch{Bad $_.Exception.Message;Bad $_.ScriptStackTrace;Read-Host "Press Enter to exit"|Out-Null;exit 1}
+try{$config=LoadConfig; $paths=Paths $config; InitStore $paths; CleanupStaleSessions $config $paths; while($true){Header $config; CleanupStaleSessions $config $paths; ShowSessions $paths $config; Write-Host ""; Write-Host "1. Reservation"; Write-Host "2. Run now"; Write-Host "3. Exit"; switch(Read-Host "Select"){"1"{ReservationMenu $paths}"2"{if(RunNow $config $paths){return}; Read-Host "Press Enter to continue"|Out-Null}"3"{StopOwnedTargets $config $paths; return}default{Warn "Invalid selection."; Start-Sleep 1}}}}catch{Bad $_.Exception.Message; Bad $_.ScriptStackTrace; Read-Host "Press Enter to exit"|Out-Null; exit 1}
