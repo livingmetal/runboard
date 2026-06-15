@@ -44,7 +44,26 @@ function AddReservation($p){Write-Host "";Info "Add reservation";Write-Host "Dat
 function CancelMine($p){$user=CurrentUser;$now=Get-Date;WithLock $p {$items=@(Reservations $p);$mine=@($items|?{$_.status -eq "reserved" -and $_.user -ieq $user -and ([datetime]$_.endTime) -ge $now}|sort{[datetime]$_.startTime});if($mine.Count -eq 0){Write-Host "No active reservation for $user.";return};for($i=0;$i -lt $mine.Count;$i++){Write-Host ("{0}. {1} ~ {2} | {3}" -f ($i+1),(FTime $mine[$i].startTime),(FTime $mine[$i].endTime),$mine[$i].purpose)};$choice=Read-Host "Select reservation to cancel, blank to go back";if([string]::IsNullOrWhiteSpace($choice)){return};$idx=[int]$choice-1;if($idx -lt 0 -or $idx -ge $mine.Count){Bad "Invalid selection.";return};$id=$mine[$idx].reservationId;foreach($r in $items){if($r.reservationId -eq $id){$r.status="cancelled"}};SaveReservations $p $items;Info "Reservation cancelled."}}
 function CurrentOtherReservations($p){$now=Get-Date;$user=CurrentUser;@(Reservations $p|?{$_.status -eq "reserved" -and $_.user -ine $user -and $now -ge ([datetime]$_.startTime) -and $now -lt ([datetime]$_.endTime)})}
 function NextOtherReservation($p){$now=Get-Date;$user=CurrentUser;@(Reservations $p|?{$_.status -eq "reserved" -and $_.user -ine $user -and ([datetime]$_.startTime) -gt $now}|sort{[datetime]$_.startTime}|select -First 1)}
-function ShowSessions($p){Write-Host "";Info "Current sessions";$files=@(gci $p.runningDir -Filter "*.json" -ea SilentlyContinue);if($files.Count -eq 0){Write-Host "No running sessions.";return};$now=Get-Date;$rows=foreach($f in $files){try{$s=gc -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json;$age=[math]::Round(($now-([datetime]$s.lastSeen)).TotalMinutes,1);[pscustomobject]@{State=$(if($age -le 5){"running"}else{"stale"});User=$s.user;Computer=$s.computer;Start=FTime $s.startTime;LastSeen=FTime $s.lastSeen;AgeMin=$age}}catch{}};$rows|ft -AutoSize}
+
+function ShowSessions($p){
+    Write-Host ""
+    Info "Current sessions"
+    $files=@(gci $p.runningDir -Filter "*.json" -ea SilentlyContinue)
+    if($files.Count -eq 0){Write-Host "No running sessions."}
+    else{
+        $now=Get-Date
+        $rows=foreach($f in $files){try{$s=gc -Raw $f.FullName -Encoding UTF8|ConvertFrom-Json;$age=[math]::Round(($now-([datetime]$s.lastSeen)).TotalMinutes,1);[pscustomobject]@{State=$(if($age -le 5){"running"}else{"stale"});User=$s.user;Computer=$s.computer;Start=FTime $s.startTime;LastSeen=FTime $s.lastSeen;AgeMin=$age}}catch{}}
+        $rows|ft -AutoSize
+    }
+
+    Write-Host ""
+    Info "Current / upcoming reservations"
+    $now2 = Get-Date
+    $until = $now2.AddDays(1)
+    $reservations = @(Reservations $p | ?{ $_.status -eq "reserved" -and ([datetime]$_.endTime) -ge $now2 -and ([datetime]$_.startTime) -lt $until } | sort{[datetime]$_.startTime})
+    if($reservations.Count -eq 0){ Write-Host "No current or upcoming reservations in the next 24 hours."; return }
+    $reservations | Select @{n="State";e={ if($now2 -ge ([datetime]$_.startTime) -and $now2 -lt ([datetime]$_.endTime)){"now"}else{"upcoming"} }},@{n="Start";e={FTime $_.startTime}},@{n="End";e={FTime $_.endTime}},@{n="User";e={$_.user}},@{n="Purpose";e={$_.purpose}} | ft -AutoSize
+}
 
 function StartWatcher($p, $sessionFile, $heartbeatFile, $closedFile, $processId, $c){
     $watcher = Join-Path (BaseDir) "RunBoardWatcher.ps1"
@@ -82,9 +101,7 @@ function RunNow($c,$p){
 function WaitForTargetThenExit($processId){
     if(-not $processId){return}
     Info "Waiting for target process to exit. Close this RunBoard window if you only want the watcher to remain."
-    while(Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue){
-        Start-Sleep -Seconds 2
-    }
+    while(Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue){ Start-Sleep -Seconds 2 }
     Info "Target process exited. Closing RunBoard."
 }
 
@@ -108,11 +125,7 @@ function StopOwnedTargets($c,$p){
         $proc = $t.Process
         try{
             Info "Stopping PID $($proc.Id) ($($proc.ProcessName))"
-            if($proc.MainWindowHandle -ne 0){
-                [void]$proc.CloseMainWindow()
-                Start-Sleep -Seconds 5
-                $proc = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-            }
+            if($proc.MainWindowHandle -ne 0){ [void]$proc.CloseMainWindow(); Start-Sleep -Seconds 5; $proc = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue }
             if($proc){ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
         }catch{ Warn "Failed to stop PID $($t.Process.Id): $($_.Exception.Message)" }
     }
@@ -129,8 +142,6 @@ try{
     while($true){
         Header $config
         ShowSessions $paths
-        $next=NextOtherReservation $paths
-        if($next){Info "Next other reservation: $(FTime $next.startTime) ~ $(FTime $next.endTime) | $($next.user) | $($next.purpose)"}
         Write-Host ""
         Write-Host "1. Reservation"
         Write-Host "2. Run now"
