@@ -19,12 +19,13 @@ It records who runs a program, keeps a heartbeat while the program is running, s
 - Heartbeat file while the target program is running
 - Running and closed session JSON logs
 - Detached watcher mode
+- Stale session cleanup
 - English/ASCII UI only, to avoid Windows PowerShell encoding issues
 
 ## Files
 
 ```text
-RunBoard.ps1                  # English/ASCII UI, waits for target process
+RunBoard.ps1                  # English/ASCII UI, launches detached watcher and exits
 RunBoardDetached.ps1          # English/ASCII UI, launches detached watcher and exits
 RunBoardWatcher.ps1           # Background watcher used by detached mode
 runboard.config.json          # created automatically on first run
@@ -103,7 +104,10 @@ This allows one RunBoard script to wrap multiple programs.
   "controlRoot": "\\\\fileserver\\app_control\\sample-app",
   "heartbeatIntervalSeconds": 30,
   "reservationWarningMinutes": [15, 5, 0],
-  "preventOverlappingReservations": true
+  "preventOverlappingReservations": true,
+  "staleMinutes": 10,
+  "staleCleanupMinutesSameComputer": 30,
+  "staleCleanupHoursOtherComputer": 24
 }
 ```
 
@@ -161,6 +165,32 @@ When the target program exits, the session is moved to:
 
 ```text
 <controlRoot>\sessions\closed\<sessionId>.json
+```
+
+### Stale session cleanup
+
+RunBoard runs stale cleanup on startup and before showing the dashboard.
+
+Default policy:
+
+```text
+staleMinutes = 10
+  -> Current sessions shows stale when lastSeen is older than 10 minutes.
+
+staleCleanupMinutesSameComputer = 30
+  -> If the stale session is from the current computer and its PID no longer exists, move it to closed after 30 minutes.
+
+staleCleanupHoursOtherComputer = 24
+  -> If the stale session is from another computer, move it to closed after 24 hours.
+```
+
+Cleanup does not delete the record. It moves the JSON file from `sessions\running` to `sessions\closed` and marks it:
+
+```json
+{
+  "status": "stale_closed",
+  "closedBy": "stale_cleanup"
+}
 ```
 
 ### Detached watcher lifecycle
