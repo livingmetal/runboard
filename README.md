@@ -19,12 +19,12 @@ It records who runs a program, keeps a heartbeat while the program is running, s
 - Heartbeat file while the target program is running
 - Running and closed session JSON logs
 - Detached watcher mode
+- English/ASCII UI only, to avoid Windows PowerShell encoding issues
 
 ## Files
 
 ```text
 RunBoard.ps1                  # English/ASCII UI, waits for target process
-RunBoard.ko.ps1               # Korean UI, waits for target process
 RunBoardDetached.ps1          # English/ASCII UI, launches detached watcher
 RunBoardWatcher.ps1           # Background watcher used by detached mode
 runboard.config.json          # created automatically on first run
@@ -53,19 +53,15 @@ Run PowerShell and execute:
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ps1
 ```
 
-Korean UI:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1
-```
-
 Detached watcher mode:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoardDetached.ps1
 ```
 
-In detached mode, RunBoard starts the target program and launches `RunBoardWatcher.ps1` in the background. The user may close the RunBoard window. The watcher keeps updating heartbeat/session data until the target process exits. After the target process exits, the watcher writes the closed session log, removes the running session and heartbeat files, then exits.
+In detached mode, RunBoard starts the target program and launches `RunBoardWatcher.ps1` in the background. The watcher keeps updating heartbeat/session data until the target process exits. After the target process exits, the watcher writes the closed session log, removes the running session and heartbeat files, then exits.
+
+`RunBoardDetached.ps1` also waits for the launched target process. When the target process exits, the RunBoard command window closes. If the user closes the RunBoard command window first, the hidden watcher continues logging.
 
 On first run, RunBoard asks for:
 
@@ -87,12 +83,6 @@ After setup, RunBoard creates `runboard.config.json` next to the script.
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ps1 -ConfigPath .\configs\starccm.json
-```
-
-Korean UI:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1 -ConfigPath .\configs\starccm.json
 ```
 
 Detached watcher mode:
@@ -182,7 +172,8 @@ RunBoardDetached.ps1
   -> starts target exe
   -> creates running session and heartbeat
   -> starts RunBoardWatcher.ps1 hidden
-  -> returns to menu
+  -> waits for the target PID
+  -> exits when the target PID exits
 
 RunBoardWatcher.ps1
   -> updates heartbeat while target PID exists
@@ -193,6 +184,17 @@ RunBoardWatcher.ps1
 ```
 
 The watcher exits shortly after the target program exits. The delay is up to `heartbeatIntervalSeconds`.
+
+### Exit behavior in detached mode
+
+When the user selects `3. Exit`, RunBoard stops only target processes that match all of these conditions:
+
+- same `appId`
+- same user
+- same computer
+- PID exists in `sessions\running`
+
+RunBoard first tries `CloseMainWindow()`, waits 5 seconds, then uses `Stop-Process -Force` if the process is still alive.
 
 ## Notes
 
