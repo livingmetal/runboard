@@ -22,7 +22,8 @@ It records who runs a program, keeps a heartbeat while the program is running, s
 ## Files
 
 ```text
-RunBoard.ps1
+RunBoard.ps1                  # English/ASCII UI
+RunBoard.ko.ps1               # Korean UI
 runboard.config.json          # created automatically on first run
 runboard.sample.config.json   # example config
 ```
@@ -49,6 +50,14 @@ Run PowerShell and execute:
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ps1
 ```
 
+Korean UI:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1
+```
+
+The Korean UI script stores user-facing Korean text as UTF-8 Base64 strings and decodes it at runtime. This avoids common script-file encoding issues on Windows PowerShell 5.1.
+
 On first run, RunBoard asks for:
 
 1. Target exe path
@@ -71,7 +80,13 @@ After setup, RunBoard creates `runboard.config.json` next to the script.
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ps1 -ConfigPath .\configs\starccm.json
 ```
 
-This allows one `RunBoard.ps1` to wrap multiple programs.
+Korean UI:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1 -ConfigPath .\configs\starccm.json
+```
+
+This allows one RunBoard script to wrap multiple programs.
 
 ## Sample config
 
@@ -146,7 +161,5 @@ When the target program exits, the session is moved to:
 ```
 
 ## Notes
-
-The script intentionally uses mostly ASCII UI text to avoid encoding issues on Windows PowerShell 5.1.
 
 No administrator feature is included. Users can cancel only their own future reservations.
