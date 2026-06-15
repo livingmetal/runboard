@@ -25,20 +25,9 @@ function Expand-PathValue {
     return Join-Path (Get-BaseDirectory) $expanded
 }
 
-function Write-Info {
-    param([string]$Message)
-    Write-Host $Message -ForegroundColor Cyan
-}
-
-function Write-Warn {
-    param([string]$Message)
-    Write-Host $Message -ForegroundColor Yellow
-}
-
-function Write-Bad {
-    param([string]$Message)
-    Write-Host $Message -ForegroundColor Red
-}
+function Write-Info { param([string]$Message) Write-Host $Message -ForegroundColor Cyan }
+function Write-Warn { param([string]$Message) Write-Host $Message -ForegroundColor Yellow }
+function Write-Bad  { param([string]$Message) Write-Host $Message -ForegroundColor Red }
 
 function Show-Popup {
     param(
@@ -52,13 +41,11 @@ function Show-Popup {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop | Out-Null
         $icon = [System.Windows.Forms.MessageBoxIcon]::Information
         $buttons = [System.Windows.Forms.MessageBoxButtons]::OK
-
         if ($Kind -eq "Warning") { $icon = [System.Windows.Forms.MessageBoxIcon]::Warning }
         if ($Kind -eq "Question") {
             $icon = [System.Windows.Forms.MessageBoxIcon]::Question
             $buttons = [System.Windows.Forms.MessageBoxButtons]::YesNo
         }
-
         return [System.Windows.Forms.MessageBox]::Show($Message, $Title, $buttons, $icon)
     }
     catch {
@@ -97,22 +84,16 @@ function New-InitialConfig {
 
     $targetArgs = Read-Host "Target arguments [empty]"
     $workingDirectory = Read-Host "Working directory [target exe directory]"
-    if ([string]::IsNullOrWhiteSpace($workingDirectory)) {
-        $workingDirectory = Split-Path -Parent $targetPath
-    }
+    if ([string]::IsNullOrWhiteSpace($workingDirectory)) { $workingDirectory = Split-Path -Parent $targetPath }
 
     do {
         $controlRoot = Read-Host "Log/reservation root path"
         $controlRoot = Expand-PathValue $controlRoot
-        if ([string]::IsNullOrWhiteSpace($controlRoot)) {
-            Write-Bad "Control root is required."
-        }
+        if ([string]::IsNullOrWhiteSpace($controlRoot)) { Write-Bad "Control root is required." }
     } while ([string]::IsNullOrWhiteSpace($controlRoot))
 
-    $appId = ConvertTo-SafeId $appName
-
     $config = [ordered]@{
-        appId = $appId
+        appId = ConvertTo-SafeId $appName
         appName = $appName
         targetPath = $targetPath
         targetArgs = $targetArgs
@@ -124,10 +105,7 @@ function New-InitialConfig {
     }
 
     $dir = Split-Path -Parent $Path
-    if (-not [string]::IsNullOrWhiteSpace($dir)) {
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    }
-
+    if (-not [string]::IsNullOrWhiteSpace($dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     $config | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -Path $Path
     Write-Info "Config created: $Path"
     return [pscustomobject]$config
@@ -135,12 +113,11 @@ function New-InitialConfig {
 
 function Get-Config {
     $path = Get-DefaultConfigPath
-    if (-not (Test-Path $path -PathType Leaf)) {
-        return New-InitialConfig -Path $path
-    }
-
+    if (-not (Test-Path $path -PathType Leaf)) { return New-InitialConfig -Path $path }
     $config = Get-Content -Raw -Path $path | ConvertFrom-Json
     if (-not $config.appId) { $config | Add-Member -NotePropertyName appId -NotePropertyValue (ConvertTo-SafeId $config.appName) }
+    if (-not $config.heartbeatIntervalSeconds) { $config | Add-Member -NotePropertyName heartbeatIntervalSeconds -NotePropertyValue 30 }
+    if (-not $config.reservationWarningMinutes) { $config | Add-Member -NotePropertyName reservationWarningMinutes -NotePropertyValue @(15, 5, 0) }
     return $config
 }
 
@@ -161,25 +138,13 @@ function Get-Paths {
 
 function Initialize-Storage {
     param($Paths)
-    @(
-        $Paths.ReservationsDir,
-        $Paths.RunningDir,
-        $Paths.ClosedDir,
-        $Paths.HeartbeatsDir,
-        $Paths.LogsDir
-    ) | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
-
-    if (-not (Test-Path $Paths.ReservationsFile -PathType Leaf)) {
-        "[]" | Set-Content -Encoding UTF8 -Path $Paths.ReservationsFile
-    }
+    @($Paths.ReservationsDir, $Paths.RunningDir, $Paths.ClosedDir, $Paths.HeartbeatsDir, $Paths.LogsDir) |
+        ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
+    if (-not (Test-Path $Paths.ReservationsFile -PathType Leaf)) { "[]" | Set-Content -Encoding UTF8 -Path $Paths.ReservationsFile }
 }
 
 function Invoke-WithFileLock {
-    param(
-        [string]$LockPath,
-        [scriptblock]$Action,
-        [int]$TimeoutSeconds = 15
-    )
+    param([string]$LockPath, [scriptblock]$Action, [int]$TimeoutSeconds = 15)
 
     $lockDir = Split-Path -Parent $LockPath
     New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
@@ -196,7 +161,8 @@ function Invoke-WithFileLock {
             $writer.WriteLine("time=$((Get-Date).ToString('s'))")
             $writer.Flush()
             $stream.Position = 0
-            return & $Action
+            $result = & $Action
+            return $result
         }
         catch {
             if ($stream) { $stream.Dispose(); $stream = $null }
@@ -210,7 +176,6 @@ function Invoke-WithFileLock {
             }
         }
     }
-
     throw "Could not acquire lock: $LockPath"
 }
 
@@ -230,16 +195,8 @@ function Get-Reservations {
     return @($items)
 }
 
-function Save-Reservations {
-    param($Paths, [array]$Reservations)
-    $Reservations | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -Path $Paths.ReservationsFile
-}
-
-function Format-Time {
-    param($Value)
-    if ($null -eq $Value) { return "" }
-    return ([datetime]$Value).ToString("yyyy-MM-dd HH:mm")
-}
+function Save-Reservations { param($Paths, [array]$Reservations) $Reservations | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -Path $Paths.ReservationsFile }
+function Format-Time { param($Value) if ($null -eq $Value) { return "" } return ([datetime]$Value).ToString("yyyy-MM-dd HH:mm") }
 
 function Show-Reservations {
     param($Paths, [int]$Days = 7)
@@ -251,10 +208,7 @@ function Show-Reservations {
 
     Write-Host ""
     Write-Info "Reservations"
-    if (-not $reservations -or $reservations.Count -eq 0) {
-        Write-Host "No reservations."
-        return
-    }
+    if (-not $reservations -or $reservations.Count -eq 0) { Write-Host "No reservations."; return }
 
     $reservations | Select-Object `
         @{Name="Start";Expression={Format-Time $_.startTime}},
@@ -265,14 +219,11 @@ function Show-Reservations {
 
 function Get-OverlappingReservations {
     param($Paths, [datetime]$Start, [datetime]$End)
-    Get-Reservations $Paths | Where-Object {
-        $_.status -eq "reserved" -and $Start -lt ([datetime]$_.endTime) -and $End -gt ([datetime]$_.startTime)
-    }
+    Get-Reservations $Paths | Where-Object { $_.status -eq "reserved" -and $Start -lt ([datetime]$_.endTime) -and $End -gt ([datetime]$_.startTime) }
 }
 
 function Add-Reservation {
     param($Paths)
-
     Write-Host ""
     Write-Info "Add reservation"
     Write-Host "Date format: yyyy-MM-dd HH:mm"
@@ -282,11 +233,7 @@ function Add-Reservation {
     $endText = Read-Host "End time"
     $start = [datetime]::Parse($startText)
     $end = [datetime]::Parse($endText)
-
-    if ($end -le $start) {
-        Write-Bad "End time must be later than start time."
-        return
-    }
+    if ($end -le $start) { Write-Bad "End time must be later than start time."; return }
 
     $purpose = Read-Host "Purpose [optional]"
     $currentUser = Get-CurrentUserName
@@ -327,14 +274,8 @@ function Cancel-MyReservation {
 
     Invoke-WithFileLock -LockPath $Paths.ReservationsLock -Action {
         $reservations = @(Get-Reservations $Paths)
-        $mine = @($reservations | Where-Object {
-            $_.status -eq "reserved" -and $_.user -ieq $currentUser -and ([datetime]$_.endTime) -ge $now
-        } | Sort-Object { [datetime]$_.startTime })
-
-        if ($mine.Count -eq 0) {
-            Write-Host "No active reservations for $currentUser."
-            return
-        }
+        $mine = @($reservations | Where-Object { $_.status -eq "reserved" -and $_.user -ieq $currentUser -and ([datetime]$_.endTime) -ge $now } | Sort-Object { [datetime]$_.startTime })
+        if ($mine.Count -eq 0) { Write-Host "No active reservations for $currentUser."; return }
 
         Write-Host ""
         for ($i = 0; $i -lt $mine.Count; $i++) {
@@ -344,16 +285,15 @@ function Cancel-MyReservation {
         $choice = Read-Host "Select reservation to cancel or blank to go back"
         if ([string]::IsNullOrWhiteSpace($choice)) { return }
         $index = [int]$choice - 1
-        if ($index -lt 0 -or $index -ge $mine.Count) {
-            Write-Bad "Invalid selection."
-            return
-        }
+        if ($index -lt 0 -or $index -ge $mine.Count) { Write-Bad "Invalid selection."; return }
 
         $cancelId = $mine[$index].reservationId
         foreach ($r in $reservations) {
             if ($r.reservationId -eq $cancelId) {
                 $r.status = "cancelled"
-                $r.cancelledAt = (Get-Date).ToString("s")
+                $cancelledAt = (Get-Date).ToString("s")
+                if ($r.PSObject.Properties.Name -contains "cancelledAt") { $r.cancelledAt = $cancelledAt }
+                else { $r | Add-Member -NotePropertyName cancelledAt -NotePropertyValue $cancelledAt }
             }
         }
         Save-Reservations -Paths $Paths -Reservations $reservations
@@ -367,24 +307,14 @@ function Show-CurrentSessions {
     $files = @(Get-ChildItem -Path $Paths.RunningDir -Filter "*.json" -ErrorAction SilentlyContinue)
     Write-Host ""
     Write-Info "Current sessions"
-    if ($files.Count -eq 0) {
-        Write-Host "No running sessions."
-        return
-    }
+    if ($files.Count -eq 0) { Write-Host "No running sessions."; return }
 
     $items = foreach ($file in $files) {
         try {
             $s = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
             $last = [datetime]$s.lastSeen
             $age = [math]::Round(($now - $last).TotalMinutes, 1)
-            [pscustomobject]@{
-                State = $(if ($age -le 5) { "running" } else { "stale" })
-                User = $s.user
-                Computer = $s.computer
-                Start = Format-Time $s.startTime
-                LastSeen = Format-Time $s.lastSeen
-                AgeMin = $age
-            }
+            [pscustomobject]@{ State = $(if ($age -le 5) { "running" } else { "stale" }); User = $s.user; Computer = $s.computer; Start = Format-Time $s.startTime; LastSeen = Format-Time $s.lastSeen; AgeMin = $age }
         } catch {}
     }
     $items | Format-Table -AutoSize
@@ -394,38 +324,26 @@ function Get-CurrentOtherReservations {
     param($Paths)
     $now = Get-Date
     $user = Get-CurrentUserName
-    @(Get-Reservations $Paths | Where-Object {
-        $_.status -eq "reserved" -and $_.user -ine $user -and $now -ge ([datetime]$_.startTime) -and $now -lt ([datetime]$_.endTime)
-    } | Sort-Object { [datetime]$_.startTime })
+    @(Get-Reservations $Paths | Where-Object { $_.status -eq "reserved" -and $_.user -ine $user -and $now -ge ([datetime]$_.startTime) -and $now -lt ([datetime]$_.endTime) } | Sort-Object { [datetime]$_.startTime })
 }
 
 function Get-NextOtherReservation {
     param($Paths)
     $now = Get-Date
     $user = Get-CurrentUserName
-    @(Get-Reservations $Paths | Where-Object {
-        $_.status -eq "reserved" -and $_.user -ine $user -and ([datetime]$_.startTime) -gt $now
-    } | Sort-Object { [datetime]$_.startTime } | Select-Object -First 1)
+    @(Get-Reservations $Paths | Where-Object { $_.status -eq "reserved" -and $_.user -ine $user -and ([datetime]$_.startTime) -gt $now } | Sort-Object { [datetime]$_.startTime } | Select-Object -First 1)
 }
 
-function Write-JsonFileSafe {
-    param([string]$Path, $Object)
-    $Object | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -Path $Path
-}
+function Write-JsonFileSafe { param([string]$Path, $Object) $Object | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -Path $Path }
 
 function Start-TargetProgram {
     param($Config, $Paths)
 
     $targetPath = Expand-PathValue $Config.targetPath
-    if (-not (Test-Path $targetPath -PathType Leaf)) {
-        Write-Bad "Target exe not found: $targetPath"
-        return
-    }
+    if (-not (Test-Path $targetPath -PathType Leaf)) { Write-Bad "Target exe not found: $targetPath"; return }
 
     $workingDirectory = Expand-PathValue $Config.workingDirectory
-    if ([string]::IsNullOrWhiteSpace($workingDirectory) -or -not (Test-Path $workingDirectory -PathType Container)) {
-        $workingDirectory = Split-Path -Parent $targetPath
-    }
+    if ([string]::IsNullOrWhiteSpace($workingDirectory) -or -not (Test-Path $workingDirectory -PathType Container)) { $workingDirectory = Split-Path -Parent $targetPath }
 
     Show-CurrentSessions $Paths
 
@@ -434,10 +352,7 @@ function Start-TargetProgram {
         $r = $currentOthers[0]
         $message = "Current time overlaps another user's reservation.`r`n`r`nUser: $($r.user)`r`nTime: $(Format-Time $r.startTime) ~ $(Format-Time $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nRun anyway?"
         $answer = Show-Popup -Title "RunBoard reservation warning" -Message $message -Kind Question
-        if ($answer -ne "Yes") {
-            Write-Warn "Run cancelled by user."
-            return
-        }
+        if ($answer -ne "Yes") { Write-Warn "Run cancelled by user."; return }
     }
 
     $now = Get-Date
@@ -447,14 +362,8 @@ function Start-TargetProgram {
     $closedFile = Join-Path $Paths.ClosedDir "$sessionId.json"
     $heartbeatFile = Join-Path $Paths.HeartbeatsDir "$sessionId.hb"
 
-    $startInfo = @{
-        FilePath = $targetPath
-        WorkingDirectory = $workingDirectory
-        PassThru = $true
-    }
-    if (-not [string]::IsNullOrWhiteSpace($Config.targetArgs)) {
-        $startInfo.ArgumentList = $Config.targetArgs
-    }
+    $startInfo = @{ FilePath = $targetPath; WorkingDirectory = $workingDirectory; PassThru = $true }
+    if (-not [string]::IsNullOrWhiteSpace($Config.targetArgs)) { $startInfo.ArgumentList = $Config.targetArgs }
 
     Write-Info "Starting: $targetPath"
     $process = Start-Process @startInfo
@@ -516,13 +425,7 @@ function Start-TargetProgram {
             if (-not $shown.ContainsKey($key)) {
                 $shown[$key] = $true
                 $session.warningsShown += $key
-                $session.overlappedReservations += [pscustomobject]@{
-                    reservationId = $r.reservationId
-                    user = $r.user
-                    startTime = $r.startTime
-                    endTime = $r.endTime
-                    purpose = $r.purpose
-                }
+                $session.overlappedReservations += [pscustomobject]@{ reservationId = $r.reservationId; user = $r.user; startTime = $r.startTime; endTime = $r.endTime; purpose = $r.purpose }
                 $msg = "Another user's reservation has started.`r`n`r`nUser: $($r.user)`r`nTime: $(Format-Time $r.startTime) ~ $(Format-Time $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nPlease wrap up when possible."
                 Show-Popup -Title "RunBoard reservation started" -Message $msg -Kind Warning | Out-Null
             }
@@ -560,7 +463,7 @@ function Show-ReservationMenu {
 }
 
 function Show-Header {
-    param($Config, $Paths)
+    param($Config)
     Clear-Host
     Write-Host "========================================"
     Write-Host " RunBoard - $($Config.appName)"
@@ -569,7 +472,6 @@ function Show-Header {
     Write-Host "Computer   : $env:COMPUTERNAME"
     Write-Host "Target     : $(Expand-PathValue $Config.targetPath)"
     Write-Host "ControlRoot: $(Expand-PathValue $Config.controlRoot)"
-    Write-Host ""
 }
 
 function Start-RunBoard {
@@ -578,7 +480,7 @@ function Start-RunBoard {
     Initialize-Storage $paths
 
     while ($true) {
-        Show-Header -Config $config -Paths $paths
+        Show-Header -Config $config
         Show-CurrentSessions $paths
         $next = Get-NextOtherReservation $paths
         if ($next) {
@@ -599,9 +501,7 @@ function Start-RunBoard {
     }
 }
 
-try {
-    Start-RunBoard
-}
+try { Start-RunBoard }
 catch {
     Write-Bad $_.Exception.Message
     Write-Bad $_.ScriptStackTrace
