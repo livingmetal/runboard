@@ -1,0 +1,11 @@
+{
+  "appId": "sample-app",
+  "appName": "Sample App",
+  "targetPath": "C:\\Apps\\Sample\\sample.exe",
+  "targetArgs": "",
+  "workingDirectory": "C:\\Apps\\Sample",
+  "controlRoot": "\\\\fileserver\\app_control\\sample-app",
+  "heartbeatIntervalSeconds": 30,
+  "reservationWarningMinutes": [15, 5, 0],
+  "preventOverlappingReservations": true
+}
