@@ -1,0 +1,17 @@
+# Local RunBoard config
+runboard.config.json
+configs/*.local.json
+
+# Logs and generated data
+*.log
+*.hb
+sessions/
+heartbeats/
+reservations/
+logs/
+
+# PowerShell temp/editor files
+*.tmp
+*.bak
+.vscode/
+.idea/
