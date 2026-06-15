@@ -7,5 +7,8 @@
   "controlRoot": "\\\\fileserver\\app_control\\sample-app",
   "heartbeatIntervalSeconds": 30,
   "reservationWarningMinutes": [15, 5, 0],
-  "preventOverlappingReservations": true
+  "preventOverlappingReservations": true,
+  "staleMinutes": 10,
+  "staleCleanupMinutesSameComputer": 30,
+  "staleCleanupHoursOtherComputer": 24
 }
