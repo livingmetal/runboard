@@ -75,12 +75,12 @@ function StartWatcher($p, $sessionFile, $heartbeatFile, $closedFile, $processId,
 
 function RunNow($c,$p){
     $target=ExpandPath $c.targetPath
-    if(-not(Test-Path $target -PathType Leaf)){Bad "Target exe not found: $target";return $null}
+    if(-not(Test-Path $target -PathType Leaf)){Bad "Target exe not found: $target";return $false}
     $work=ExpandPath $c.workingDirectory
     if(-not(Test-Path $work -PathType Container)){$work=Split-Path -Parent $target}
     ShowSessions $p
     $others=@(CurrentOtherReservations $p)
-    if($others.Count -gt 0){$r=$others[0];$msg="Current time overlaps another user's reservation.`r`n`r`nUser: $($r.user)`r`nTime: $(FTime $r.startTime) ~ $(FTime $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nRun anyway?";if((Popup "RunBoard reservation warning" $msg $true) -ne "Yes"){Warn "Run cancelled by user.";return $null}}
+    if($others.Count -gt 0){$r=$others[0];$msg="Current time overlaps another user's reservation.`r`n`r`nUser: $($r.user)`r`nTime: $(FTime $r.startTime) ~ $(FTime $r.endTime)`r`nPurpose: $($r.purpose)`r`n`r`nRun anyway?";if((Popup "RunBoard reservation warning" $msg $true) -ne "Yes"){Warn "Run cancelled by user.";return $false}}
     $now=Get-Date
     $sid="{0}-{1}-{2}-{3}" -f $c.appId,$now.ToString("yyyyMMdd-HHmmss"),(SafeId $env:COMPUTERNAME),(SafeId $env:USERNAME)
     $sessionFile=Join-Path $p.runningDir "$sid.json"
@@ -94,15 +94,8 @@ function RunNow($c,$p){
     $session|ConvertTo-Json -Depth 10|Set-Content $sessionFile -Encoding UTF8
     $now.ToString("s")|Set-Content $heartbeatFile -Encoding ASCII
     StartWatcher $p $sessionFile $heartbeatFile $closedFile $proc.Id $c
-    Info "Detached watcher started. This RunBoard window will close when the target process exits."
-    return $proc.Id
-}
-
-function WaitForTargetThenExit($processId){
-    if(-not $processId){return}
-    Info "Waiting for target process to exit. Close this RunBoard window if you only want the watcher to remain."
-    while(Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue){ Start-Sleep -Seconds 2 }
-    Info "Target process exited. Closing RunBoard."
+    Info "Detached watcher started. RunBoard will exit now; watcher will keep logging."
+    return $true
 }
 
 function StopOwnedTargets($c,$p){
@@ -148,7 +141,7 @@ try{
         Write-Host "3. Exit"
         switch(Read-Host "Select"){
             "1"{ReservationMenu $paths}
-            "2"{$pid=RunNow $config $paths; if($pid){WaitForTargetThenExit $pid; return}; Read-Host "Press Enter to continue"|Out-Null}
+            "2"{if(RunNow $config $paths){return}; Read-Host "Press Enter to continue"|Out-Null}
             "3"{StopOwnedTargets $config $paths; return}
             default{Warn "Invalid selection."; Start-Sleep 1}
         }
