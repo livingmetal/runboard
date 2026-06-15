@@ -18,12 +18,15 @@ It records who runs a program, keeps a heartbeat while the program is running, s
 - Popup warning when current time overlaps another user's reservation
 - Heartbeat file while the target program is running
 - Running and closed session JSON logs
+- Detached watcher mode
 
 ## Files
 
 ```text
-RunBoard.ps1                  # English/ASCII UI
-RunBoard.ko.ps1               # Korean UI
+RunBoard.ps1                  # English/ASCII UI, waits for target process
+RunBoard.ko.ps1               # Korean UI, waits for target process
+RunBoardDetached.ps1          # English/ASCII UI, launches detached watcher
+RunBoardWatcher.ps1           # Background watcher used by detached mode
 runboard.config.json          # created automatically on first run
 runboard.sample.config.json   # example config
 ```
@@ -56,7 +59,13 @@ Korean UI:
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1
 ```
 
-The Korean UI script stores user-facing Korean text as UTF-8 Base64 strings and decodes it at runtime. This avoids common script-file encoding issues on Windows PowerShell 5.1.
+Detached watcher mode:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\RunBoardDetached.ps1
+```
+
+In detached mode, RunBoard starts the target program and launches `RunBoardWatcher.ps1` in the background. The user may close the RunBoard window. The watcher keeps updating heartbeat/session data until the target process exits. After the target process exits, the watcher writes the closed session log, removes the running session and heartbeat files, then exits.
 
 On first run, RunBoard asks for:
 
@@ -84,6 +93,12 @@ Korean UI:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\RunBoard.ko.ps1 -ConfigPath .\configs\starccm.json
+```
+
+Detached watcher mode:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\RunBoardDetached.ps1 -ConfigPath .\configs\starccm.json
 ```
 
 This allows one RunBoard script to wrap multiple programs.
@@ -159,6 +174,25 @@ When the target program exits, the session is moved to:
 ```text
 <controlRoot>\sessions\closed\<sessionId>.json
 ```
+
+### Detached watcher lifecycle
+
+```text
+RunBoardDetached.ps1
+  -> starts target exe
+  -> creates running session and heartbeat
+  -> starts RunBoardWatcher.ps1 hidden
+  -> returns to menu
+
+RunBoardWatcher.ps1
+  -> updates heartbeat while target PID exists
+  -> shows reservation warning popups when possible
+  -> when target PID disappears, writes closed session
+  -> removes running session and heartbeat
+  -> exits
+```
+
+The watcher exits shortly after the target program exits. The delay is up to `heartbeatIntervalSeconds`.
 
 ## Notes
 
