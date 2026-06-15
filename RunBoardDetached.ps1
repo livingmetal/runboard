@@ -50,18 +50,7 @@ function StartWatcher($p, $sessionFile, $heartbeatFile, $closedFile, $processId,
     $watcher = Join-Path (BaseDir) "RunBoardWatcher.ps1"
     if(-not(Test-Path $watcher -PathType Leaf)){throw "RunBoardWatcher.ps1 not found: $watcher"}
     $warns = @($c.reservationWarningMinutes) -join ","
-    $arg = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", "`"$watcher`"",
-        "-ProcessId", $processId,
-        "-SessionFile", "`"$sessionFile`"",
-        "-HeartbeatFile", "`"$heartbeatFile`"",
-        "-ClosedFile", "`"$closedFile`"",
-        "-ReservationFile", "`"$($p.reservationFile)`"",
-        "-HeartbeatIntervalSeconds", $c.heartbeatIntervalSeconds,
-        "-ReservationWarningMinutes", $warns
-    ) -join " "
+    $arg = @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$watcher`"","-ProcessId",$processId,"-SessionFile","`"$sessionFile`"","-HeartbeatFile","`"$heartbeatFile`"","-ClosedFile","`"$closedFile`"","-ReservationFile","`"$($p.reservationFile)`"","-HeartbeatIntervalSeconds",$c.heartbeatIntervalSeconds,"-ReservationWarningMinutes",$warns) -join " "
     Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arg | Out-Null
 }
 
@@ -89,6 +78,38 @@ function RunNow($c,$p){
     Info "Detached watcher started. You may close this RunBoard window; logging will continue."
 }
 
+function StopOwnedTargets($c,$p){
+    $user = CurrentUser
+    $computer = $env:COMPUTERNAME
+    $files = @(Get-ChildItem $p.runningDir -Filter "*.json" -ErrorAction SilentlyContinue)
+    $targets = @()
+    foreach($f in $files){
+        try{
+            $s = Get-Content -Raw $f.FullName -Encoding UTF8 | ConvertFrom-Json
+            if($s.appId -eq $c.appId -and $s.user -ieq $user -and $s.computer -ieq $computer -and $s.pid){
+                $proc = Get-Process -Id ([int]$s.pid) -ErrorAction SilentlyContinue
+                if($proc){ $targets += [pscustomobject]@{Process=$proc; Session=$s} }
+            }
+        }catch{}
+    }
+    if($targets.Count -eq 0){ Info "No owned target process to stop."; return }
+    Info "Stopping $($targets.Count) owned target process(es)."
+    foreach($t in $targets){
+        $proc = $t.Process
+        try{
+            Info "Stopping PID $($proc.Id) ($($proc.ProcessName))"
+            $closed = $false
+            if($proc.MainWindowHandle -ne 0){
+                $closed = $proc.CloseMainWindow()
+                Start-Sleep -Seconds 5
+                $proc = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            }
+            if($proc){ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        }catch{ Warn "Failed to stop PID $($t.Process.Id): $($_.Exception.Message)" }
+    }
+    Info "Exit requested. Watcher will move sessions to closed shortly."
+}
+
 function ReservationMenu($p){while($true){Write-Host "";Write-Host "1. Add reservation";Write-Host "2. Cancel my reservation";Write-Host "3. Show reservations";Write-Host "4. Back";switch(Read-Host "Select"){"1"{AddReservation $p}"2"{CancelMine $p}"3"{ShowReservations $p}"4"{return}default{Warn "Invalid selection."}}}}
 function Header($c){Clear-Host;Write-Host "========================================";Write-Host " RunBoard - $($c.appName)";Write-Host "========================================";Write-Host "User       : $(CurrentUser)";Write-Host "Computer   : $env:COMPUTERNAME";Write-Host "Target     : $(ExpandPath $c.targetPath)";Write-Host "ControlRoot: $(ExpandPath $c.controlRoot)"}
 
@@ -108,7 +129,7 @@ try{
         switch(Read-Host "Select"){
             "1"{ReservationMenu $paths}
             "2"{RunNow $config $paths; Read-Host "Press Enter to continue"|Out-Null}
-            "3"{return}
+            "3"{StopOwnedTargets $config $paths; return}
             default{Warn "Invalid selection."; Start-Sleep 1}
         }
     }
